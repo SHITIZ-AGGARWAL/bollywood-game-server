@@ -15,119 +15,156 @@ const io = new Server(server, {
 
 const rooms = {};
 
-const getMaskedMovie = (movie, usedLetters = []) => {
-  return movie
-    .toUpperCase()
-    .split("")
-    .map(char => {
-      if ("AEIOU".includes(char)) return char;
-      return usedLetters.includes(char) ? char : "_";
-    });
-};
-
 io.on("connection", (socket) => {
-  socket.on("create-room", ({ name }, cb) => {
-    const code = Math.random().toString(36).substr(2, 5).toUpperCase();
-    rooms[code] = {
-      players: [{ id: socket.id, name, team: "A", isLeader: true }],
-      leader: name,
-      movie: null,
+  socket.on("createRoom", ({ roomId, player }) => {
+    rooms[roomId] = {
+      teams: {
+        A: { players: [{ ...player, id: socket.id, isLeader: true }], score: 0, leader: socket.id },
+        B: { players: [], score: 0, leader: null },
+      },
+      round: 1,
+      turn: "A",
+      currentMovie: null,
+      maskedMovie: "",
+      strikes: 0,
       usedLetters: [],
-      guess: [],
-      scores: { A: 0, B: 0 },
-      currentTeam: "A",
-      wrongGuesses: 0,
-      round: 1
     };
-    socket.join(code);
-    cb(code);
+    socket.join(roomId);
+    socket.emit("roomCreated", roomId);
+    io.to(roomId).emit("updateTeams", rooms[roomId].teams);
   });
 
-  socket.on("join-room", ({ room, name }, cb) => {
-    const roomData = rooms[room];
-    if (!roomData) return cb(false);
-
-    const team = roomData.players.filter(p => p.team === "A").length >
-                 roomData.players.filter(p => p.team === "B").length ? "B" : "A";
-
-    roomData.players.push({ id: socket.id, name, team, isLeader: false });
-    socket.join(room);
-    cb(true);
-    io.to(room).emit("game-state", roomData);
+  socket.on("joinRoom", ({ roomId, player }) => {
+    socket.join(roomId);
+    io.to(roomId).emit("playerJoined", { playerId: socket.id });
   });
 
-  socket.on("join-game", ({ room, name }) => {
-    const roomData = rooms[room];
-    if (!roomData) return;
-    io.to(room).emit("game-state", roomData);
+  socket.on("joinTeam", ({ roomId, team }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    // Remove from both teams first
+    ["A", "B"].forEach((t) => {
+      room.teams[t].players = room.teams[t].players.filter(p => p.id !== socket.id);
+      if (room.teams[t].leader === socket.id) {
+        room.teams[t].leader = null;
+      }
+    });
+
+    const newPlayer = { id: socket.id, isLeader: false };
+    room.teams[team].players.push(newPlayer);
+
+    if (!room.teams[team].leader) {
+      room.teams[team].leader = socket.id;
+      newPlayer.isLeader = true;
+    }
+
+    io.to(roomId).emit("updateTeams", room.teams);
   });
 
-  socket.on("submit-movie", ({ room, movie }) => {
-    const roomData = rooms[room];
-    roomData.movie = movie.toUpperCase();
-    roomData.usedLetters = [];
-    roomData.guess = getMaskedMovie(movie);
-    roomData.wrongGuesses = 0;
-    io.to(room).emit("game-state", roomData);
+  socket.on("startGame", ({ roomId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    const ready = room.teams.A.players.length > 0 && room.teams.B.players.length > 0;
+    if (ready) {
+      room.round = 1;
+      room.turn = "A";
+      room.strikes = 0;
+      room.usedLetters = [];
+      room.currentMovie = null;
+      room.maskedMovie = "";
+
+      io.to(roomId).emit("gameStarted");
+    }
   });
 
-  socket.on("guess-letter", ({ room, letter }) => {
-    const roomData = rooms[room];
-    if (!roomData || roomData.usedLetters.includes(letter)) return;
+  socket.on("submitMovie", ({ roomId, movie }) => {
+    const room = rooms[roomId];
+    if (!room) return;
 
-    roomData.usedLetters.push(letter);
-    const movie = roomData.movie.toUpperCase();
+    room.currentMovie = movie.toUpperCase();
+    room.usedLetters = [];
+    room.strikes = 0;
+    room.maskedMovie = movie
+      .split("")
+      .map(c => /[aeiouAEIOU\s]/.test(c) ? c : "_")
+      .join("");
 
-    if (!movie.includes(letter)) {
-      roomData.wrongGuesses++;
-      if (roomData.wrongGuesses >= 9) {
-        roomData.movie = null;
-        roomData.wrongGuesses = 0;
-        roomData.currentTeam = roomData.currentTeam === "A" ? "B" : "A";
+    io.to(roomId).emit("movieReady", room.maskedMovie);
+  });
+
+  socket.on("guessLetter", ({ roomId, letter }) => {
+    const room = rooms[roomId];
+    if (!room || !room.currentMovie || room.usedLetters.includes(letter)) return;
+
+    const upper = room.currentMovie.toUpperCase();
+    room.usedLetters.push(letter);
+
+    if (upper.includes(letter)) {
+      room.maskedMovie = upper
+        .split("")
+        .map((c, i) =>
+          /[aeiouAEIOU\s]/.test(c)
+            ? c
+            : room.usedLetters.includes(c)
+            ? c
+            : "_"
+        )
+        .join("");
+
+      io.to(roomId).emit("correctGuess", room.maskedMovie);
+
+      if (!room.maskedMovie.includes("_")) {
+        const guessingTeam = room.turn === "A" ? "B" : "A";
+        room.teams[guessingTeam].score += 10;
+        io.to(roomId).emit("roundResult", {
+          winner: guessingTeam,
+          score: room.teams,
+        });
       }
     } else {
-      const updated = getMaskedMovie(movie, roomData.usedLetters);
-      roomData.guess = updated;
-
-      if (!updated.includes("_")) {
-        roomData.scores[roomData.currentTeam] += 10;
-        roomData.movie = null;
-        roomData.currentTeam = roomData.currentTeam === "A" ? "B" : "A";
+      room.strikes += 1;
+      io.to(roomId).emit("wrongGuess", room.strikes);
+      if (room.strikes >= 9) {
+        io.to(roomId).emit("roundFailed", {
+          movie: room.currentMovie
+        });
       }
     }
-
-    io.to(room).emit("game-state", roomData);
   });
 
-  socket.on("timeout-strike", ({ room }) => {
-    const roomData = rooms[room];
-    roomData.wrongGuesses++;
-    if (roomData.wrongGuesses >= 9) {
-      roomData.movie = null;
-      roomData.currentTeam = roomData.currentTeam === "A" ? "B" : "A";
-      roomData.wrongGuesses = 0;
-    }
-    io.to(room).emit("game-state", roomData);
+  socket.on("sendMessage", ({ roomId, message }) => {
+    io.to(roomId).emit("receiveMessage", message);
   });
 
-  socket.on("send-message", ({ room, message }) => {
-    io.to(room).emit("receive-message", message);
+  socket.on("nextRound", ({ roomId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    room.round += 1;
+    room.turn = room.turn === "A" ? "B" : "A";
+    room.currentMovie = "";
+    room.maskedMovie = "";
+    room.strikes = 0;
+    room.usedLetters = [];
+
+    io.to(roomId).emit("roundStart", room.turn);
   });
 
   socket.on("disconnect", () => {
-    for (const room in rooms) {
-      const roomData = rooms[room];
-      roomData.players = roomData.players.filter(p => p.id !== socket.id);
-      if (roomData.players.length === 0) {
-        delete rooms[room];
-      } else {
-        // Reassign leader if necessary
-        if (!roomData.players.find(p => p.isLeader)) {
-          roomData.players[0].isLeader = true;
-          roomData.leader = roomData.players[0].name;
+    for (const roomId in rooms) {
+      const room = rooms[roomId];
+      ["A", "B"].forEach((teamKey) => {
+        const team = room.teams[teamKey];
+        team.players = team.players.filter(p => p.id !== socket.id);
+        if (team.leader === socket.id) {
+          team.leader = team.players[0]?.id || null;
+          if (team.players[0]) team.players[0].isLeader = true;
         }
-        io.to(room).emit("game-state", roomData);
-      }
+      });
+
+      io.to(roomId).emit("updateTeams", room.teams);
     }
   });
 });
