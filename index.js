@@ -32,6 +32,7 @@ io.on("connection", (socket) => {
         A: { players: [{ ...player, id: socket.id, isLeader: true }], score: 0, leader: socket.id },
         B: { players: [], score: 0, leader: null },
       },
+      waitingPlayers: [],
       round: 1,
       turn: "A",
       currentMovie: null,
@@ -48,51 +49,42 @@ io.on("connection", (socket) => {
   socket.on("joinRoom", ({ roomId, player }) => {
     const room = rooms[roomId];
     if (!room) return;
-  
-    const newPlayer = { ...player, id: socket.id, isLeader: false };
-  
-    if (!room.waitingPlayers) room.waitingPlayers = [];
-  
-    // Add to waiting list
+
+    const newPlayer = { id: socket.id, name: player.name, isLeader: false };
+
     room.waitingPlayers = room.waitingPlayers.filter(p => p.id !== socket.id);
     room.waitingPlayers.push(newPlayer);
-  
+
     socket.join(roomId);
     socket.emit("playerJoined", { playerId: socket.id, name: player.name });
-  
-    // Also send current room team/player state
     io.to(roomId).emit("updateTeams", room.teams);
   });
-  
 
   // ✅ JOIN TEAM
   socket.on("joinTeam", ({ roomId, team }) => {
     const room = rooms[roomId];
     if (!room) return;
-  
-    const playerIndex = room.waitingPlayers?.findIndex(p => p.id === socket.id);
-    if (playerIndex === -1 || playerIndex === undefined) return;
-  
+
+    const playerIndex = room.waitingPlayers.findIndex(p => p.id === socket.id);
+    if (playerIndex === -1) return;
+
     const joiningPlayer = room.waitingPlayers.splice(playerIndex, 1)[0];
-  
-    // Remove from both teams if already present
+
     ["A", "B"].forEach(t => {
       room.teams[t].players = room.teams[t].players.filter(p => p.id !== socket.id);
       if (room.teams[t].leader === socket.id) {
         room.teams[t].leader = null;
       }
     });
-  
-    // Assign to selected team
+
     room.teams[team].players.push(joiningPlayer);
     if (!room.teams[team].leader) {
       room.teams[team].leader = socket.id;
       joiningPlayer.isLeader = true;
     }
-  
+
     io.to(roomId).emit("updateTeams", room.teams);
   });
-  
 
   // ✅ START GAME
   socket.on("startGame", ({ roomId }) => {
