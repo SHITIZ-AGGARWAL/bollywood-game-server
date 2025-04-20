@@ -1,3 +1,4 @@
+// ✅ Bollywood Game Server - Full Final Version
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -24,6 +25,7 @@ const getMaskedMovie = (movie, usedLetters = []) => {
 };
 
 io.on("connection", (socket) => {
+  // ✅ CREATE ROOM
   socket.on("createRoom", ({ roomId, player }) => {
     rooms[roomId] = {
       teams: {
@@ -42,50 +44,53 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("updateTeams", rooms[roomId].teams);
   });
 
+  // ✅ JOIN ROOM
   socket.on("joinRoom", ({ roomId, player }) => {
     const room = rooms[roomId];
     if (!room) return;
-  
-    // Add player to room (not yet to team)
+
     const newPlayer = { ...player, id: socket.id, isLeader: false };
-  
-    // Remove from both teams if already present
+
+    // Ensure clean state (remove if already in room)
     room.teams.A.players = room.teams.A.players.filter(p => p.id !== socket.id);
     room.teams.B.players = room.teams.B.players.filter(p => p.id !== socket.id);
-  
-    // Temporarily add to A for now — team can be changed
-    room.teams.A.players.push(newPlayer);
-  
+
+    room.teams.A.players.push(newPlayer); // default assignment
     socket.join(roomId);
     socket.emit("playerJoined", { playerId: socket.id });
-  
     io.to(roomId).emit("updateTeams", room.teams);
   });
-  
-  
 
+  // ✅ JOIN TEAM
   socket.on("joinTeam", ({ roomId, team }) => {
     const room = rooms[roomId];
     if (!room) return;
 
-    ["A", "B"].forEach((t) => {
+    // Remove from all teams
+    ["A", "B"].forEach(t => {
       room.teams[t].players = room.teams[t].players.filter(p => p.id !== socket.id);
       if (room.teams[t].leader === socket.id) {
         room.teams[t].leader = null;
       }
     });
 
-    const newPlayer = { id: socket.id, isLeader: false };
-    room.teams[team].players.push(newPlayer);
+    // Reassign player to new team
+    const allPlayers = [...room.teams.A.players, ...room.teams.B.players];
+    const existingPlayer = allPlayers.find(p => p.id === socket.id);
+    if (!existingPlayer) return;
+
+    existingPlayer.isLeader = false;
+    room.teams[team].players.push(existingPlayer);
 
     if (!room.teams[team].leader) {
       room.teams[team].leader = socket.id;
-      newPlayer.isLeader = true;
+      existingPlayer.isLeader = true;
     }
 
     io.to(roomId).emit("updateTeams", room.teams);
   });
 
+  // ✅ START GAME
   socket.on("startGame", ({ roomId }) => {
     const room = rooms[roomId];
     if (!room) return;
@@ -105,6 +110,7 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ✅ SUBMIT MOVIE
   socket.on("submitMovie", ({ roomId, movie }) => {
     const room = rooms[roomId];
     if (!room) return;
@@ -117,6 +123,7 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("movieReady", room.maskedMovie);
   });
 
+  // ✅ GUESS LETTER
   socket.on("guessLetter", ({ roomId, letter }) => {
     const room = rooms[roomId];
     if (!room || !room.currentMovie || room.usedLetters.includes(letter)) return;
@@ -140,13 +147,12 @@ io.on("connection", (socket) => {
       room.strikes += 1;
       io.to(roomId).emit("wrongGuess", room.strikes);
       if (room.strikes >= 9) {
-        io.to(roomId).emit("roundFailed", {
-          movie: room.currentMovie,
-        });
+        io.to(roomId).emit("roundFailed", { movie: room.currentMovie });
       }
     }
   });
 
+  // ✅ NEXT ROUND
   socket.on("nextRound", ({ roomId }) => {
     const room = rooms[roomId];
     if (!room) return;
@@ -161,14 +167,16 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("roundStart", room.turn);
   });
 
+  // ✅ CHAT
   socket.on("sendMessage", ({ roomId, message }) => {
     io.to(roomId).emit("receiveMessage", message);
   });
 
+  // ✅ HANDLE DISCONNECT
   socket.on("disconnect", () => {
     for (const roomId in rooms) {
       const room = rooms[roomId];
-      ["A", "B"].forEach((teamKey) => {
+      ["A", "B"].forEach(teamKey => {
         const team = room.teams[teamKey];
         team.players = team.players.filter(p => p.id !== socket.id);
         if (team.leader === socket.id) {
