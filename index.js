@@ -8,12 +8,20 @@ app.use(cors());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: "*"
-  }
+  cors: { origin: "*" },
 });
 
 const rooms = {};
+
+const getMaskedMovie = (movie, usedLetters = []) => {
+  return movie
+    .toUpperCase()
+    .split("")
+    .map(char => {
+      if ("AEIOU ".includes(char)) return char;
+      return usedLetters.includes(char) ? char : "_";
+    }).join("");
+};
 
 io.on("connection", (socket) => {
   socket.on("createRoom", ({ roomId, player }) => {
@@ -36,14 +44,13 @@ io.on("connection", (socket) => {
 
   socket.on("joinRoom", ({ roomId, player }) => {
     socket.join(roomId);
-    io.to(roomId).emit("playerJoined", { playerId: socket.id });
+    socket.emit("playerJoined", { playerId: socket.id });
   });
 
   socket.on("joinTeam", ({ roomId, team }) => {
     const room = rooms[roomId];
     if (!room) return;
 
-    // Remove from both teams first
     ["A", "B"].forEach((t) => {
       room.teams[t].players = room.teams[t].players.filter(p => p.id !== socket.id);
       if (room.teams[t].leader === socket.id) {
@@ -66,8 +73,10 @@ io.on("connection", (socket) => {
     const room = rooms[roomId];
     if (!room) return;
 
-    const ready = room.teams.A.players.length > 0 && room.teams.B.players.length > 0;
-    if (ready) {
+    const teamAReady = room.teams.A.players.length > 0;
+    const teamBReady = room.teams.B.players.length > 0;
+
+    if (teamAReady && teamBReady) {
       room.round = 1;
       room.turn = "A";
       room.strikes = 0;
@@ -86,10 +95,7 @@ io.on("connection", (socket) => {
     room.currentMovie = movie.toUpperCase();
     room.usedLetters = [];
     room.strikes = 0;
-    room.maskedMovie = movie
-      .split("")
-      .map(c => /[aeiouAEIOU\s]/.test(c) ? c : "_")
-      .join("");
+    room.maskedMovie = getMaskedMovie(movie, []);
 
     io.to(roomId).emit("movieReady", room.maskedMovie);
   });
@@ -102,17 +108,7 @@ io.on("connection", (socket) => {
     room.usedLetters.push(letter);
 
     if (upper.includes(letter)) {
-      room.maskedMovie = upper
-        .split("")
-        .map((c, i) =>
-          /[aeiouAEIOU\s]/.test(c)
-            ? c
-            : room.usedLetters.includes(c)
-            ? c
-            : "_"
-        )
-        .join("");
-
+      room.maskedMovie = getMaskedMovie(upper, room.usedLetters);
       io.to(roomId).emit("correctGuess", room.maskedMovie);
 
       if (!room.maskedMovie.includes("_")) {
@@ -128,14 +124,10 @@ io.on("connection", (socket) => {
       io.to(roomId).emit("wrongGuess", room.strikes);
       if (room.strikes >= 9) {
         io.to(roomId).emit("roundFailed", {
-          movie: room.currentMovie
+          movie: room.currentMovie,
         });
       }
     }
-  });
-
-  socket.on("sendMessage", ({ roomId, message }) => {
-    io.to(roomId).emit("receiveMessage", message);
   });
 
   socket.on("nextRound", ({ roomId }) => {
@@ -152,6 +144,10 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("roundStart", room.turn);
   });
 
+  socket.on("sendMessage", ({ roomId, message }) => {
+    io.to(roomId).emit("receiveMessage", message);
+  });
+
   socket.on("disconnect", () => {
     for (const roomId in rooms) {
       const room = rooms[roomId];
@@ -163,7 +159,6 @@ io.on("connection", (socket) => {
           if (team.players[0]) team.players[0].isLeader = true;
         }
       });
-
       io.to(roomId).emit("updateTeams", room.teams);
     }
   });
