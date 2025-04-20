@@ -121,8 +121,14 @@ io.on("connection", (socket) => {
         turn: room.turn,
         round: room.round,
         teams: room.teams
+        
       });
+     
+      io.to(roomId).emit("updateTeams", room.teams);
+
     }
+    
+
   });
 
   // ✅ SUBMIT MOVIE
