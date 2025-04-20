@@ -1,4 +1,4 @@
-// ✅ Bollywood Game Server - Full Final Version
+// ✅ Bollywood Game Server - Final Fixes Applied
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -42,7 +42,10 @@ io.on("connection", (socket) => {
     };
     socket.join(roomId);
     socket.emit("roomCreated", roomId);
-    io.to(roomId).emit("updateTeams", rooms[roomId].teams);
+    io.to(roomId).emit("roomState", {
+      teams: rooms[roomId].teams,
+      waitingPlayers: rooms[roomId].waitingPlayers
+    });
   });
 
   // ✅ JOIN ROOM
@@ -181,7 +184,13 @@ io.on("connection", (socket) => {
 
   // ✅ CHAT
   socket.on("sendMessage", ({ roomId, message }) => {
-    io.to(roomId).emit("receiveMessage", message);
+    const room = rooms[roomId];
+    if (!room) return;
+
+    const allPlayers = [...room.teams.A.players, ...room.teams.B.players];
+    const sender = allPlayers.find(p => p.id === socket.id)?.name || "Player";
+
+    io.to(roomId).emit("receive-message", `${sender}: ${message}`);
   });
 
   // ✅ HANDLE DISCONNECT
