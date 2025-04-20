@@ -1,3 +1,4 @@
+// ✅ Bollywood Game Server - Full Final Version with Player Sync Fixes
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -20,21 +21,27 @@ const getMaskedMovie = (movie, usedLetters = []) => {
     .map(char => {
       if ("AEIOU ".includes(char)) return char;
       return usedLetters.includes(char) ? char : "_";
-    })
-    .join("");
+    }).join("");
 };
 
-const broadcastState = (roomId) => {
+const emitRoomState = (roomId) => {
   const room = rooms[roomId];
   if (!room) return;
 
-  io.to(roomId).emit("gameStateUpdate", {
+  const players = [];
+
+  room.teams.A.players.forEach(p => players.push({ ...p, team: "A" }));
+  room.teams.B.players.forEach(p => players.push({ ...p, team: "B" }));
+
+  io.to(roomId).emit("roomState", {
     teams: room.teams,
+    players,
     round: room.round,
     turn: room.turn,
-    gameState: room.gameState,
+    currentMovie: room.currentMovie,
     maskedMovie: room.maskedMovie,
     strikes: room.strikes,
+    usedLetters: room.usedLetters,
   });
 };
 
@@ -42,21 +49,20 @@ io.on("connection", (socket) => {
   socket.on("createRoom", ({ roomId, player }) => {
     rooms[roomId] = {
       teams: {
-        A: { players: [{ ...player, id: socket.id, isLeader: true }], score: 0, leader: socket.id },
+        A: { players: [], score: 0, leader: null },
         B: { players: [], score: 0, leader: null },
       },
-      waitingPlayers: [],
+      waitingPlayers: [{ ...player, id: socket.id, isLeader: false }],
       round: 1,
       turn: "A",
       currentMovie: null,
       maskedMovie: "",
       strikes: 0,
       usedLetters: [],
-      gameState: "waiting",
     };
     socket.join(roomId);
     socket.emit("roomCreated", roomId);
-    broadcastState(roomId);
+    emitRoomState(roomId);
   });
 
   socket.on("joinRoom", ({ roomId, player }) => {
@@ -66,20 +72,26 @@ io.on("connection", (socket) => {
     const newPlayer = { id: socket.id, name: player.name, isLeader: false };
     room.waitingPlayers = room.waitingPlayers.filter(p => p.id !== socket.id);
     room.waitingPlayers.push(newPlayer);
+
     socket.join(roomId);
     socket.emit("playerJoined", { playerId: socket.id, name: player.name });
-    broadcastState(roomId);
+    emitRoomState(roomId);
   });
 
   socket.on("joinTeam", ({ roomId, team }) => {
     const room = rooms[roomId];
     if (!room) return;
 
-    const index = room.waitingPlayers.findIndex(p => p.id === socket.id);
-    if (index === -1) return;
+    let joiningPlayer = room.waitingPlayers.find(p => p.id === socket.id);
+    if (!joiningPlayer) {
+      ["A", "B"].forEach(t => {
+        const existing = room.teams[t].players.find(p => p.id === socket.id);
+        if (existing) joiningPlayer = existing;
+      });
+    }
+    if (!joiningPlayer) return;
 
-    const joiningPlayer = room.waitingPlayers.splice(index, 1)[0];
-
+    room.waitingPlayers = room.waitingPlayers.filter(p => p.id !== socket.id);
     ["A", "B"].forEach(t => {
       room.teams[t].players = room.teams[t].players.filter(p => p.id !== socket.id);
       if (room.teams[t].leader === socket.id) room.teams[t].leader = null;
@@ -91,25 +103,26 @@ io.on("connection", (socket) => {
       joiningPlayer.isLeader = true;
     }
 
-    broadcastState(roomId);
+    emitRoomState(roomId);
   });
 
   socket.on("startGame", ({ roomId }) => {
     const room = rooms[roomId];
     if (!room) return;
 
-    const A = room.teams.A.players.length > 0;
-    const B = room.teams.B.players.length > 0;
-    if (A && B) {
+    const teamAReady = room.teams.A.players.length > 0;
+    const teamBReady = room.teams.B.players.length > 0;
+
+    if (teamAReady && teamBReady) {
       room.round = 1;
       room.turn = "A";
       room.strikes = 0;
       room.usedLetters = [];
       room.currentMovie = null;
       room.maskedMovie = "";
-      room.gameState = "submitting";
+
       io.to(roomId).emit("gameStarted");
-      broadcastState(roomId);
+      emitRoomState(roomId);
     }
   });
 
@@ -121,9 +134,9 @@ io.on("connection", (socket) => {
     room.usedLetters = [];
     room.strikes = 0;
     room.maskedMovie = getMaskedMovie(movie, []);
-    room.gameState = "guessing";
+
     io.to(roomId).emit("movieReady", room.maskedMovie);
-    broadcastState(roomId);
+    emitRoomState(roomId);
   });
 
   socket.on("guessLetter", ({ roomId, letter }) => {
@@ -136,25 +149,23 @@ io.on("connection", (socket) => {
     if (upper.includes(letter)) {
       room.maskedMovie = getMaskedMovie(upper, room.usedLetters);
       io.to(roomId).emit("correctGuess", room.maskedMovie);
+
       if (!room.maskedMovie.includes("_")) {
         const guessingTeam = room.turn === "A" ? "B" : "A";
         room.teams[guessingTeam].score += 10;
-        room.gameState = "watching";
         io.to(roomId).emit("roundResult", {
           winner: guessingTeam,
           score: room.teams,
         });
-        broadcastState(roomId);
       }
     } else {
       room.strikes += 1;
       io.to(roomId).emit("wrongGuess", room.strikes);
       if (room.strikes >= 9) {
-        room.gameState = "watching";
         io.to(roomId).emit("roundFailed", { movie: room.currentMovie });
-        broadcastState(roomId);
       }
     }
+    emitRoomState(roomId);
   });
 
   socket.on("nextRound", ({ roomId }) => {
@@ -167,9 +178,9 @@ io.on("connection", (socket) => {
     room.maskedMovie = "";
     room.strikes = 0;
     room.usedLetters = [];
-    room.gameState = "submitting";
+
     io.to(roomId).emit("roundStart", room.turn);
-    broadcastState(roomId);
+    emitRoomState(roomId);
   });
 
   socket.on("sendMessage", ({ roomId, message }) => {
@@ -188,7 +199,7 @@ io.on("connection", (socket) => {
         }
       });
       room.waitingPlayers = room.waitingPlayers.filter(p => p.id !== socket.id);
-      broadcastState(roomId);
+      emitRoomState(roomId);
     }
   });
 });
