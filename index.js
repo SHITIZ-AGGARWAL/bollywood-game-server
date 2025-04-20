@@ -43,9 +43,21 @@ io.on("connection", (socket) => {
   });
 
   socket.on("joinRoom", ({ roomId, player }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+  
+    const newPlayer = { ...player, id: socket.id, isLeader: false };
+    room.teams.A.players = room.teams.A.players.filter(p => p.id !== socket.id);
+    room.teams.B.players = room.teams.B.players.filter(p => p.id !== socket.id);
+    // Temporarily add player to A by default so they exist
+    room.teams.A.players.push(newPlayer);
+  
     socket.join(roomId);
     socket.emit("playerJoined", { playerId: socket.id });
+  
+    io.to(roomId).emit("updateTeams", room.teams);
   });
+  
 
   socket.on("joinTeam", ({ roomId, team }) => {
     const room = rooms[roomId];
