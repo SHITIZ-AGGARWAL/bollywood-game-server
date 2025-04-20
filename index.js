@@ -46,10 +46,14 @@ io.on("connection", (socket) => {
     const room = rooms[roomId];
     if (!room) return;
   
+    // Add player to room (not yet to team)
     const newPlayer = { ...player, id: socket.id, isLeader: false };
+  
+    // Remove from both teams if already present
     room.teams.A.players = room.teams.A.players.filter(p => p.id !== socket.id);
     room.teams.B.players = room.teams.B.players.filter(p => p.id !== socket.id);
-    // Temporarily add player to A by default so they exist
+  
+    // Temporarily add to A for now — team can be changed
     room.teams.A.players.push(newPlayer);
   
     socket.join(roomId);
@@ -57,6 +61,7 @@ io.on("connection", (socket) => {
   
     io.to(roomId).emit("updateTeams", room.teams);
   });
+  
   
 
   socket.on("joinTeam", ({ roomId, team }) => {
