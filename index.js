@@ -14,6 +14,22 @@ const io = new Server(server, {
 
 const rooms = {};
 
+// Initialize messages array in room state
+const initializeRoom = (roomId, player) => ({
+  teams: {
+    A: { players: [], score: 0, leader: null },
+    B: { players: [], score: 0, leader: null },
+  },
+  waitingPlayers: [{ ...player, id: player.id, isLeader: false }],
+  round: 1,
+  turn: "A",
+  currentMovie: null,
+  maskedMovie: "",
+  strikes: 0,
+  usedLetters: [],
+  messages: [] // Add messages array to store chat history
+});
+
 const getMaskedMovie = (movie, usedLetters = []) => {
   return movie
     .toUpperCase()
@@ -27,19 +43,7 @@ const getMaskedMovie = (movie, usedLetters = []) => {
 io.on("connection", (socket) => {
   // ✅ CREATE ROOM
   socket.on("createRoom", ({ roomId, player }) => {
-    rooms[roomId] = {
-      teams: {
-        A: { players: [], score: 0, leader: null },
-        B: { players: [], score: 0, leader: null },
-      },
-      waitingPlayers: [{ ...player, id: socket.id, isLeader: false }],
-      round: 1,
-      turn: "A",
-      currentMovie: null,
-      maskedMovie: "",
-      strikes: 0,
-      usedLetters: [],
-    };
+    rooms[roomId] = initializeRoom(roomId, { ...player, id: socket.id });
     socket.join(roomId);
     socket.emit("roomCreated", roomId);
     io.to(roomId).emit("roomState", {
@@ -189,14 +193,33 @@ io.on("connection", (socket) => {
   });
 
   // ✅ CHAT
-  socket.on("sendMessage", ({ roomId, message }) => {
+  socket.on("send-message", ({ roomId, message, sender, team }) => {
     const room = rooms[roomId];
-    if (!room) return;
+    if (!room) {
+      socket.emit("error", { message: "Room not found" });
+      return;
+    }
 
-    const allPlayers = [...room.teams.A.players, ...room.teams.B.players];
-    const sender = allPlayers.find(p => p.id === socket.id)?.name || "Player";
+    const newMessage = {
+      sender,
+      message,
+      team,
+      timestamp: new Date().toISOString()
+    };
 
-    io.to(roomId).emit("receive-message", `${sender}: ${message}`);
+    // Store message in room state
+    room.messages.push(newMessage);
+
+    // Broadcast to all clients in the room, including sender
+    io.to(roomId).emit("receive-message", newMessage);
+  });
+
+  // Send chat history when requested
+  socket.on("request-chat-history", ({ roomId }) => {
+    const room = rooms[roomId];
+    if (room) {
+      socket.emit("chat-history", room.messages);
+    }
   });
 
   // ✅ HANDLE DISCONNECT
